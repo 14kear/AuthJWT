@@ -1,0 +1,9 @@
+env: "local"
+
+access_ttl: 15m
+refresh_ttl: 168h
+
+http:
+  port: 8081
+
+secret: "mysecretword"
