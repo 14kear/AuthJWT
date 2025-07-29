@@ -3,16 +3,20 @@ package config
 import (
 	"github.com/ilyakaznacheev/cleanenv"
 	"log"
+	"time"
 )
 
 type Config struct {
-	Env    string     `yaml:"env" env-default:"local"`
-	HTTP   HTTPConfig `yaml:"http"`
-	Secret string     `yaml:"secret"`
+	Env             string        `yaml:"env" env-default:"local"`
+	AccessTokenTTL  time.Duration `yaml:"access_ttl"`
+	RefreshTokenTTL time.Duration `yaml:"refresh_ttl"`
+	WebhookURL      string        `yaml:"webhook_url"`
+	HTTP            HTTPConfig    `yaml:"http"`
+	Secret          string        `yaml:"secret"`
 }
 
 type HTTPConfig struct {
-	Port int `yaml:"port"`
+	Port string `yaml:"port"`
 }
 
 func Load(path string) *Config {

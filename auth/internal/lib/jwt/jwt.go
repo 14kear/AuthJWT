@@ -57,7 +57,7 @@ func generateAccessToken(user entity.User, sessionID string, ttl time.Duration, 
 }
 
 func generateSecureRefreshToken() (string, string, error) {
-	raw := make([]byte, 64)
+	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", "", err
 	}

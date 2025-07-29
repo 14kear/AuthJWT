@@ -21,6 +21,7 @@ var (
 	ErrUserExists         = errors.New("user already exists")
 	ErrUserNotFound       = errors.New("user not found")
 	ErrInvalidToken       = errors.New("invalid or expired token")
+	ErrAccessDenied       = errors.New("access denied")
 )
 
 type TokenRepository interface {
@@ -78,7 +79,7 @@ func (auth *Auth) RegisterNewUser(ctx *gin.Context, email string, password strin
 	if err != nil {
 		if errors.Is(err, repo.ErrUserAlreadyExists) {
 			log.Warn("user already exists", err)
-			return "", fmt.Errorf("%s: %w", op, ErrUserExists)
+			return "", ErrUserExists
 		}
 		log.Error("failed to save user", err)
 
@@ -99,7 +100,7 @@ func (auth *Auth) Login(ctx *gin.Context, email string, password string) (jwt.To
 	if err != nil {
 		if errors.Is(err, repo.ErrUserNotFound) {
 			log.Info("user not found")
-			return jwt.TokenPair{}, "", fmt.Errorf("%s: %w", op, ErrUserNotFound)
+			return jwt.TokenPair{}, "", ErrUserNotFound
 		}
 
 		log.Error("failed to find user", err)
@@ -108,7 +109,7 @@ func (auth *Auth) Login(ctx *gin.Context, email string, password string) (jwt.To
 
 	if err := bcrypt.CompareHashAndPassword(user.PassHash, []byte(password)); err != nil {
 		log.Info("invalid credentials", err)
-		return jwt.TokenPair{}, "", fmt.Errorf("%s: %w", op, ErrInvalidCredentials)
+		return jwt.TokenPair{}, "", ErrInvalidCredentials
 	}
 
 	log.Info("successfully logged in")
@@ -148,6 +149,17 @@ func (auth *Auth) GetTokenPairByUserGUID(ctx *gin.Context, guid string) (jwt.Tok
 
 	log := auth.log.With(slog.String("op", op), slog.String("guid", guid))
 	log.Info("getting token pair by user guid")
+
+	currentUserGUID, err := auth.GetCurrentUserGUID(ctx)
+	if err != nil {
+		log.Error("failed to get current user GUID", err)
+		return jwt.TokenPair{}, fmt.Errorf("%s: %w", op, err)
+	}
+
+	if currentUserGUID != guid {
+		log.Error("invalid user GUID")
+		return jwt.TokenPair{}, ErrAccessDenied
+	}
 
 	user, err := auth.userRepo.GetUserByGUID(ctx, guid)
 	if err != nil {
@@ -231,7 +243,13 @@ func (auth *Auth) RefreshTokens(ctx *gin.Context, refreshToken string, webhookUR
 
 	if time.Now().After(savedRefreshToken.ExpiresAt) {
 		log.Warn("refresh token is expired")
-		// TODO : можно разлогинить в целом
+
+		logoutError := auth.Logout(ctx)
+		if logoutError != nil {
+			log.Error("failed to logout", logoutError)
+			return jwt.TokenPair{}, logoutError
+		}
+
 		return jwt.TokenPair{}, ErrInvalidToken
 	}
 
@@ -239,7 +257,11 @@ func (auth *Auth) RefreshTokens(ctx *gin.Context, refreshToken string, webhookUR
 	if err != nil {
 		log.Error("failed to verify refresh token", err)
 
-		// TODO: СДЕЛАТЬ LOGOUT !!! (соответсвенно удалить токен, скорее всего в logout)
+		logoutError := auth.Logout(ctx)
+		if logoutError != nil {
+			log.Error("failed to logout", logoutError)
+			return jwt.TokenPair{}, logoutError
+		}
 
 		return jwt.TokenPair{}, ErrInvalidToken
 	}
@@ -265,7 +287,11 @@ func (auth *Auth) RefreshTokens(ctx *gin.Context, refreshToken string, webhookUR
 	if incomingUserAgent != savedRefreshToken.UserAgent {
 		log.Warn("user agent does not match")
 
-		// TODO: СДЕЛАТЬ LOGOUT !!! (соответсвенно удалить токен, скорее всего в logout)
+		logoutError := auth.Logout(ctx)
+		if logoutError != nil {
+			log.Error("failed to logout", logoutError)
+			return jwt.TokenPair{}, logoutError
+		}
 
 		return jwt.TokenPair{}, ErrInvalidToken
 	}
@@ -311,8 +337,22 @@ func (auth *Auth) Logout(ctx *gin.Context) error {
 	const op = "auth.Logout"
 
 	log := auth.log.With(slog.String("op", op))
-	log.Info("logout")
 
+	userGUID, err := auth.GetCurrentUserGUID(ctx)
+	if err != nil {
+		log.Error("failed to get current user GUID in context", err)
+		return ErrUserNotFound
+	}
+
+	err = auth.tokenRepo.DeleteTokenByUserGUID(ctx, userGUID)
+	if err != nil {
+		log.Error("failed to delete token by GUID in context", err)
+		return err
+	}
+
+	log.Info("successfully logged out")
+
+	return nil
 }
 
 func sendWebhook(url, userGUID, ip, userAgent string) {

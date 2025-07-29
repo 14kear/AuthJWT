@@ -1,15 +1,20 @@
 package main
 
 import (
-	"github.com/14kear/TestingQuestionJWT/auth/internal/storage"
+	app2 "github.com/14kear/TestingQuestionJWT/auth/internal/app"
+	"github.com/14kear/TestingQuestionJWT/auth/internal/config"
 	"log"
 )
 
 func main() {
-	database, err := storage.InitDB()
+	cfg := config.Load("C:\\Users\\shini\\OneDrive\\Рабочий стол\\TestingQuestionJWT\\auth\\config\\local.yaml")
+
+	app, err := app2.NewApp(cfg)
 	if err != nil {
-		log.Fatalf("Error connecting to database: %v", err)
+		log.Fatalf("failed to init app: %v", err)
 	}
 
-	authRepository :=
+	if err := app.Run(cfg.HTTP.Port); err != nil {
+		log.Fatalf("server error: %v", err)
+	}
 }
