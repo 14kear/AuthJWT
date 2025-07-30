@@ -4,10 +4,11 @@ import (
 	app2 "github.com/14kear/TestingQuestionJWT/auth/internal/app"
 	"github.com/14kear/TestingQuestionJWT/auth/internal/config"
 	"log"
+	"os"
 )
 
 func main() {
-	cfg := config.Load("C:\\Users\\shini\\OneDrive\\Рабочий стол\\TestingQuestionJWT\\auth\\config\\local.yaml")
+	cfg := config.Load(os.Getenv("CONFIG_PATH"))
 
 	app, err := app2.NewApp(cfg)
 	if err != nil {

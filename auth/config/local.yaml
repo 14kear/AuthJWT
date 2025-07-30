@@ -9,3 +9,11 @@ http:
   port: ":8080"
 
 secret: "mysecretword"
+
+postgres:
+  host: jwt-auth-db
+  port: 5432
+  user: postgres
+  password: 123456
+  dbname: jwt_db
+  sslmode: disable

@@ -15,7 +15,7 @@ import (
 func NewApp(cfg *config.Config) (*gin.Engine, error) {
 	logger := slog.Default()
 
-	database, err := storage.InitDB()
+	database, err := storage.InitDB(cfg)
 	if err != nil {
 		log.Fatalf("Error connecting to database: %v", err)
 	}

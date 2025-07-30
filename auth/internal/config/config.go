@@ -13,10 +13,20 @@ type Config struct {
 	WebhookURL      string        `yaml:"webhook_url"`
 	HTTP            HTTPConfig    `yaml:"http"`
 	Secret          string        `yaml:"secret"`
+	DB              DBConfig      `yaml:"postgres"`
 }
 
 type HTTPConfig struct {
 	Port string `yaml:"port"`
+}
+
+type DBConfig struct {
+	Host     string `yaml:"host"`
+	Port     string `yaml:"port"`
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+	Dbname   string `yaml:"dbname"`
+	Sslmode  string `yaml:"sslmode"`
 }
 
 func Load(path string) *Config {
