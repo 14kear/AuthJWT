@@ -1,18 +1,29 @@
 services:
   backend:
     build: .
+    container_name: authentication-backend
     ports:
       - "8080:8080"
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       CONFIG_PATH: /app/auth/config/local.yaml
+    volumes:
+      - ./auth/config:/app/auth/config
+    # Добавляем healthcheck для бэкенда
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   db:
     image: postgres:15
     container_name: jwt-auth-db
-    restart: always
     environment:
       POSTGRES_DB: jwt_db
       POSTGRES_USER: postgres
@@ -21,13 +32,23 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
       interval: 5s
       timeout: 5s
       retries: 10
-      start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    container_name: jwt-auth-redis
+    ports:
+      - "6379:6379"
+    # Добавляем healthcheck для Redis
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
 volumes:
   postgres_data:

@@ -1,19 +1,20 @@
 package services
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math/big"
+	"time"
+
 	"github.com/14kear/TestingQuestionJWT/auth/internal/entity"
 	"github.com/14kear/TestingQuestionJWT/auth/internal/lib/jwt"
 	"github.com/14kear/TestingQuestionJWT/auth/internal/repo"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
-	"log/slog"
-	"net/http"
-	"time"
 )
 
 var (
@@ -22,24 +23,37 @@ var (
 	ErrUserNotFound       = errors.New("user not found")
 	ErrInvalidToken       = errors.New("invalid or expired token")
 	ErrAccessDenied       = errors.New("access denied")
+	ErrInvalidCode        = errors.New("invalid verification code")
 )
 
 type TokenRepository interface {
-	SaveToken(ctx *gin.Context, token *entity.RefreshToken) error
-	GetRefreshTokenByUserGUID(ctx *gin.Context, guid string) (*entity.RefreshToken, error)
-	DeleteTokenByUserGUID(ctx *gin.Context, guid string) error
+	SaveToken(ctx context.Context, token *entity.RefreshToken) error
+	GetRefreshTokenByUserGUID(ctx context.Context, guid string) (*entity.RefreshToken, error)
+	DeleteTokenByUserGUID(ctx context.Context, guid string) error
 }
 
 type UserRepository interface {
-	SaveUser(ctx *gin.Context, email string, passHash []byte) (guid string, err error)
-	GetUserByEmail(ctx *gin.Context, email string) (user entity.User, err error)
-	GetUserByGUID(ctx *gin.Context, guid string) (entity.User, error)
+	SaveUser(ctx context.Context, email string, passHash []byte) (guid string, err error)
+	GetUserByEmail(ctx context.Context, email string) (user entity.User, err error)
+	GetUserByGUID(ctx context.Context, guid string) (entity.User, error)
+}
+
+type RedisStorage interface {
+	SaveCode(ctx context.Context, data entity.PendingUser, ttl time.Duration) error
+	GetCode(ctx context.Context, email string) (entity.PendingUser, error)
+	DeleteCode(ctx context.Context, email string) error
+}
+
+type EmailClient interface {
+	SendVerificationCode(to, code string) error
 }
 
 type Auth struct {
 	log             *slog.Logger
 	tokenRepo       TokenRepository
 	userRepo        UserRepository
+	redisStorage    RedisStorage
+	emailClient     EmailClient
 	jwtSecret       string
 	accessTokenTTL  time.Duration
 	refreshTokenTTL time.Duration
@@ -48,6 +62,8 @@ type Auth struct {
 func NewAuth(log *slog.Logger,
 	tokenRepo TokenRepository,
 	userRepo UserRepository,
+	redisStorage RedisStorage,
+	emailClient EmailClient,
 	jwtSecret string,
 	accessTokenTTL,
 	refreshTokenTTL time.Duration) *Auth {
@@ -55,38 +71,102 @@ func NewAuth(log *slog.Logger,
 		log:             log,
 		tokenRepo:       tokenRepo,
 		userRepo:        userRepo,
+		redisStorage:    redisStorage,
+		emailClient:     emailClient,
 		jwtSecret:       jwtSecret,
 		accessTokenTTL:  accessTokenTTL,
 		refreshTokenTTL: refreshTokenTTL,
 	}
 }
 
-func (auth *Auth) RegisterNewUser(ctx *gin.Context, email string, password string) (string, error) {
-	const op = "auth.RegisterNewUser"
+func generateCode() (string, error) {
+	minDigit := int64(100000)
+	rangeSize := int64(900000)
+
+	n, err := rand.Int(rand.Reader, big.NewInt(rangeSize))
+	if err != nil {
+		return "", err
+	}
+
+	code := minDigit + n.Int64()
+	return fmt.Sprintf("%d", code), nil
+}
+
+func (auth *Auth) SendingEmailWithCode(ctx context.Context, email, password string) error {
+	const op = "auth.sending_email_with_code"
 
 	log := auth.log.With(slog.String("operation", op))
-	log.Info("registering new user")
+	log.Info("Sending email with code...")
 
 	// хэш пароля + соль
 	passHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		log.Error("failed to generate hash password", err)
-
-		return "", fmt.Errorf("%s: %w", op, err)
+		log.Error("failed to hash password", "error", err)
+		return fmt.Errorf("%s: %w", op, err)
 	}
 
-	guid, err := auth.userRepo.SaveUser(ctx, email, passHash)
+	code, err := generateCode()
 	if err != nil {
-		if errors.Is(err, repo.ErrUserAlreadyExists) {
+		log.Error("failed to generate verification code", "error", err)
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	pendingUser := entity.PendingUser{
+		Email:    email,
+		PassHash: passHash,
+		Code:     code,
+	}
+
+	err = auth.redisStorage.SaveCode(ctx, pendingUser, 10*time.Minute)
+	if err != nil {
+		log.Error("failed to save code", "error", err)
+		return fmt.Errorf("%s: %w", op, err)
+	}
+
+	// ошибку не возвращаем, клиенту нельзя знать
+	err = auth.emailClient.SendVerificationCode(pendingUser.Email, code)
+	if err != nil {
+		auth.log.Warn("failed to send verification code", "error", err)
+	}
+
+	return nil
+}
+
+func (auth *Auth) ConfirmVerificationCode(ctx context.Context, email, code string) (string, error) {
+	const op = "auth.confirm_verification_code"
+
+	log := auth.log.With(slog.String("operation", op))
+	log.Info("Confirming verification code...")
+
+	// getcode from redis
+	pending, err := auth.redisStorage.GetCode(ctx, email)
+	if err != nil {
+		log.Warn("verification code not found or storage error", "error", err)
+		return "", ErrInvalidCode
+	}
+
+	if pending.Code != code {
+		log.Warn("invalid verification code provided")
+		return "", ErrInvalidCode
+	}
+
+	// register new user
+	guid, err := auth.userRepo.SaveUser(ctx, pending.Email, pending.PassHash)
+	if err != nil {
+		if errors.Is(err, ErrUserExists) {
 			log.Warn("user already exists", err)
 			return "", ErrUserExists
 		}
 		log.Error("failed to save user", err)
-
 		return "", fmt.Errorf("%s: %w", op, err)
 	}
 
-	log.Info("successfully registered new user")
+	// удаляем данные из redis
+	if err := auth.redisStorage.DeleteCode(ctx, email); err != nil {
+		log.Warn("failed to delete code", "error", err)
+	}
+
+	log.Info("User successfully verified and created", "user_guid", guid)
 	return guid, nil
 }
 
@@ -98,7 +178,7 @@ func (auth *Auth) Login(ctx *gin.Context, email string, password string) (jwt.To
 
 	user, err := auth.userRepo.GetUserByEmail(ctx, email)
 	if err != nil {
-		if errors.Is(err, repo.ErrUserNotFound) {
+		if errors.Is(err, ErrUserNotFound) {
 			log.Info("user not found")
 			return jwt.TokenPair{}, "", ErrUserNotFound
 		}
@@ -223,7 +303,7 @@ func (auth *Auth) GetCurrentUserGUID(ctx *gin.Context) (string, error) {
 	return userGUID, nil
 }
 
-func (auth *Auth) RefreshTokens(ctx *gin.Context, refreshToken string, webhookURL string) (jwt.TokenPair, error) {
+func (auth *Auth) RefreshTokens(ctx *gin.Context, refreshToken string) (jwt.TokenPair, error) {
 	const op = "auth.RefreshTokens"
 
 	log := auth.log.With(slog.String("op", op))
@@ -297,9 +377,6 @@ func (auth *Auth) RefreshTokens(ctx *gin.Context, refreshToken string, webhookUR
 	}
 
 	incomingIP := ctx.ClientIP()
-	if incomingIP != savedRefreshToken.IP {
-		go sendWebhook(webhookURL, userGUID, incomingIP, incomingUserAgent)
-	}
 
 	user, err := auth.userRepo.GetUserByGUID(ctx, userGUID)
 	if err != nil {
@@ -353,27 +430,4 @@ func (auth *Auth) Logout(ctx *gin.Context) error {
 	log.Info("successfully logged out")
 
 	return nil
-}
-
-func sendWebhook(url, userGUID, ip, userAgent string) {
-	payload := map[string]string{
-		"user_guid":  userGUID,
-		"ip":         ip,
-		"user_agent": userAgent,
-		"time":       time.Now().Format(time.RFC3339),
-	}
-
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		slog.Error("sendWebhook: failed to marshal payload", slog.Any("error", err))
-		return
-	}
-
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		slog.Error("sendWebhook: failed to send POST request", slog.Any("error", err))
-		return
-	}
-
-	defer resp.Body.Close()
 }
