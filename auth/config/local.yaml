@@ -9,18 +9,18 @@ http:
 secret: "mysecretword"
 
 smtp:
-  host: "smtp.gmail.com"
-  port: 587
-  user: "kirikl228666@gmail.com"
-  password: "ufug owot exis ohst"
-  from: "Auth Service <kirikl228666@gmail.com>"
+  host: 
+  port: 
+  user: 
+  password: 
+  from: 
 
 redis_addr: "jwt-auth-redis:6379"
 
 postgres:
   host: "jwt-auth-db"
   port: 5432
-  user: postgres
-  password: 123456
+  user: 
+  password: 
   dbname: jwt_db
   sslmode: disable
